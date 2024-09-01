@@ -1,0 +1,12 @@
+{
+  "postgres": {
+    "host": "localhost",
+    "port": "5423",
+    "db_name": "sse",
+    "user": "postgres",
+    "password": "postgres"
+  },
+  "http_server": {
+    "port": "8080"
+  }
+}
