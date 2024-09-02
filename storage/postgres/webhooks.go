@@ -2,9 +2,9 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
-
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
@@ -36,10 +36,6 @@ func (p *WebhookRepo) AddEvent(ctx context.Context, event models.Event) error {
 
 	_, err := p.db.Exec(ctx, query, args)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return models.ErrAlreadyProcessed
-		}
-
 		return fmt.Errorf("unable to insert row: %w", err)
 	}
 
@@ -186,4 +182,54 @@ func (p *WebhookRepo) AddCompletedOrder(ctx context.Context, orderID uuid.UUID) 
 	}
 
 	return nil
+}
+
+func (p *WebhookRepo) GetEventByID(ctx context.Context, eventID uuid.UUID) (*models.Event, error) {
+	query := `
+		SELECT event_id, order_id, user_id, order_status_id, updated_at, created_at
+			FROM events 
+			WHERE event_id = @eventID
+	`
+	args := pgx.NamedArgs{
+		"eventID": eventID,
+	}
+
+	var res models.Event
+
+	// Execute the query
+	err := p.db.QueryRow(ctx, query, args).
+		Scan(&res.EventID, &res.OrderID, &res.UserID, &res.OrderStatusID, &res.UpdatedAt, &res.CreatedAt)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return &res, nil
+}
+
+func (p *WebhookRepo) GetLastUpdatedEventByOrderID(ctx context.Context, orderID uuid.UUID) (*models.Event, error) {
+	query := `
+		SELECT event_id, order_id, user_id, order_status_id, updated_at, created_at
+			FROM events 
+			WHERE order_id = @order_id AND MAX(updated_at)
+	`
+	args := pgx.NamedArgs{
+		"orderID": orderID,
+	}
+
+	var res models.Event
+
+	// Execute the query
+	err := p.db.QueryRow(ctx, query, args).
+		Scan(&res.EventID, &res.OrderID, &res.UserID, &res.OrderStatusID, &res.UpdatedAt, &res.CreatedAt)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return &res, nil
 }

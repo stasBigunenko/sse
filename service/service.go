@@ -28,6 +28,8 @@ type WebhookRepo interface {
 	GetOrderStatusByName(ctx context.Context, name string) (*models.OrderStatus, error)
 	CheckCompletedOrderStatusByID(ctx context.Context, orderID uuid.UUID) (bool, error)
 	AddCompletedOrder(ctx context.Context, orderID uuid.UUID) error
+	GetEventByID(ctx context.Context, eventID uuid.UUID) (*models.Event, error)
+	GetLastUpdatedEventByOrderID(ctx context.Context, orderID uuid.UUID) (*models.Event, error)
 }
 
 type OrderRepo interface {

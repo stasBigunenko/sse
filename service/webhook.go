@@ -10,19 +10,27 @@ import (
 )
 
 func (s *Service) AddEvent(ctx context.Context, event models.Event, statusName string) error {
-	orderStatus, err := s.WebhookRepo.GetOrderStatusByName(ctx, statusName)
+	eventFromDB, err := s.WebhookRepo.GetEventByID(ctx, event.EventID)
 	if err != nil {
 		return err
 	}
 
-	if orderStatus.IsFinal {
-		if valid, err := s.isValidEventOrderStatus(ctx, event); err != nil || !valid {
-			if err != nil {
-				return err
-			}
+	if eventFromDB != nil {
+		return models.ErrAlreadyProcessed
+	}
 
-			return models.ErrInternalServer
-		}
+	lastEvent, err := s.WebhookRepo.GetLastUpdatedEventByOrderID(ctx, event.OrderID)
+	if err != nil {
+		return err
+	}
+
+	if err = s.validateEvent(event, *lastEvent); err != nil {
+		return err
+	}
+
+	orderStatus, err := s.WebhookRepo.GetOrderStatusByName(ctx, statusName)
+	if err != nil {
+		return err
 	}
 
 	event.OrderStatusID = orderStatus.ID
@@ -55,6 +63,20 @@ func (s *Service) GetEventHistory(ctx context.Context, orderID uuid.UUID) ([]mod
 	return res, err
 }
 
+func (s *Service) validateEvent(event, lastEvent models.Event) error {
+	if event.OrderStatusID == models.GiveMyMoneyBackID &&
+		lastEvent.OrderStatusID == models.ChinazesID &&
+		event.UpdatedAt.Sub(lastEvent.UpdatedAt) < 30*time.Second {
+		return nil
+	}
+
+	if lastEvent.OrderStatusID > 3 {
+		return models.ErrAlreadyProcessed
+	}
+
+	return nil
+}
+
 func (s *Service) isValidEventOrderStatus(ctx context.Context, event models.Event) (bool, error) {
 	var (
 		exists bool
@@ -63,7 +85,7 @@ func (s *Service) isValidEventOrderStatus(ctx context.Context, event models.Even
 
 	switch event.OrderStatusID {
 	case models.FailedID, models.ChangedMyMindID:
-		exists, err = s.EventExists(ctx, event.OrderID, []int{models.ChinazesID, models.ChangedMyMindID, models.GiveMyMoneyBackID})
+		exists, err = s.EventExists(ctx, event.OrderID, []int{models.ChinazesID, models.ChangedMyMindID, models.GiveMyMoneyBackID, models.FailedID})
 		if err != nil || exists {
 			return false, err
 		}

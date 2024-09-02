@@ -179,23 +179,11 @@ func (h *WebhookHandler) BroadcastMessage(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	completed, err := h.service.CheckCompletedOrderStatusByID(r.Context(), event.OrderID)
-	if err != nil {
-		SendInternalServerError(w, r, err)
-		return
-	}
-
-	if completed {
-		SendGone(w, r)
-		return
-	}
-
 	if err = h.service.AddEvent(r.Context(), event, req.OrderStatus); err != nil {
 		SendHTTPError(w, r, err)
 		return
 	}
 
-	// Send the message to the broker via Notifier channel
 	j, err := json.Marshal(req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
