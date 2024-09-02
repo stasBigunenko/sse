@@ -110,7 +110,7 @@ func (h *WebhookHandler) Stream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Timer to close the connection after 1 minute of inactivity
-	inactivityTimeout := time.NewTimer(10 * time.Minute)
+	inactivityTimeout := time.NewTimer(1 * time.Minute)
 	defer inactivityTimeout.Stop()
 
 	var completedTimer *time.Timer
@@ -270,7 +270,7 @@ func (h *WebhookHandler) handleMessage(ctx context.Context, msg []byte, complete
 			if *completedTimer != nil {
 				(*completedTimer).Stop()
 			}
-			*completedTimer = time.NewTimer(3000 * time.Second)
+			*completedTimer = time.NewTimer(30 * time.Second)
 		case models.GiveMyMoneyBack:
 			if *completedTimer != nil {
 				(*completedTimer).Stop()
