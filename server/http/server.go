@@ -26,6 +26,8 @@ func NewHTPPServer(controller *Controller, cfgHTTP config.HTTPServerConfig) *Ser
 
 func (s *Server) Run(ctx context.Context) {
 	go func() {
+		log.Printf("Server starts on port: %s\n", s.server.Addr)
+
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen: %s\n", err)
 		}

@@ -24,8 +24,10 @@ func (s *Service) AddEvent(ctx context.Context, event models.Event, statusName s
 		return err
 	}
 
-	if err = s.validateEvent(event, *lastEvent); err != nil {
-		return err
+	if lastEvent != nil {
+		if err = s.validateEvent(event, *lastEvent); err != nil {
+			return err
+		}
 	}
 
 	orderStatus, err := s.WebhookRepo.GetOrderStatusByName(ctx, statusName)
@@ -35,28 +37,28 @@ func (s *Service) AddEvent(ctx context.Context, event models.Event, statusName s
 
 	event.OrderStatusID = orderStatus.ID
 
-	if err = s.WebhookRepo.AddEvent(ctx, event); err != nil {
+	if err = s.WebhookRepo.AddEvent(ctx, event, orderStatus.IsFinal); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (s *Service) GetEventHistory(ctx context.Context, orderID uuid.UUID) ([]models.EventBody, error) {
+func (s *Service) GetEventHistory(ctx context.Context, orderID uuid.UUID) ([]models.EventMsg, error) {
 	eventHistory, err := s.WebhookRepo.GetOrderEvents(ctx, orderID)
 	if err != nil {
 		return nil, err
 	}
 
-	res := make([]models.EventBody, 0, len(eventHistory))
+	res := make([]models.EventMsg, 0, len(eventHistory))
 	for i := range eventHistory {
-		res = append(res, models.EventBody{
-			EventID:     eventHistory[i].EventID.String(),
-			OrderID:     eventHistory[i].OrderID.String(),
-			UserID:      eventHistory[i].UserID.String(),
+		res = append(res, models.EventMsg{
+			EventID:     eventHistory[i].EventID,
+			OrderID:     eventHistory[i].OrderID,
+			UserID:      eventHistory[i].UserID,
 			OrderStatus: eventHistory[i].OrderStatusName,
-			UpdatedAt:   eventHistory[i].UpdatedAt.String(),
-			CreatedAt:   eventHistory[i].CreatedAt.String(),
+			UpdatedAt:   eventHistory[i].UpdatedAt,
+			CreatedAt:   eventHistory[i].CreatedAt,
 		})
 	}
 

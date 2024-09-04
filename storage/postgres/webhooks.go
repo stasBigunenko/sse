@@ -19,7 +19,7 @@ func (p *Postgres) NewWebhookRepo() *WebhookRepo {
 	return &WebhookRepo{p}
 }
 
-func (p *WebhookRepo) AddEvent(ctx context.Context, event models.Event) error {
+func (p *WebhookRepo) AddEvent(ctx context.Context, event models.Event, isFinal bool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -46,7 +46,8 @@ func (p *WebhookRepo) GetOrderEvents(ctx context.Context, orderID uuid.UUID) ([]
 	query := `SELECT e.event_id, e.order_id, e.user_id, e.order_status_id, e.created_at, e.updated_at, os.name AS order_status_name, os.is_final
 			 FROM events e
 			 JOIN order_statuses os ON e.order_status_id = os.id
-			 WHERE e.order_id = @orderID`
+			 WHERE e.order_id = @orderID
+			 ORDER BY e.updated_at ASC`
 	args := pgx.NamedArgs{
 		"orderID": orderID,
 	}
@@ -146,8 +147,9 @@ func (p *WebhookRepo) CheckCompletedOrderStatusByID(ctx context.Context, orderID
 	query := `
 		SELECT EXISTS (
 			SELECT 1 
-			FROM completed_orders 
-			WHERE id = @orderID 
+			FROM events 
+			WHERE order_id = @orderID 
+			  AND order_status_id IN (4, 5, 6, 7)
 		)
 	`
 	args := pgx.NamedArgs{
@@ -169,7 +171,7 @@ func (p *WebhookRepo) AddCompletedOrder(ctx context.Context, orderID uuid.UUID) 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	query := `INSERT INTO completed_orders (order_id, completed) 
+	query := `INSERT INTO orders (id, completed) 
 		VALUES (@eventID, @orderID, @completed)`
 	args := pgx.NamedArgs{
 		"orderID":   orderID,

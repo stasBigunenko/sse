@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS "order_statuses" (
                                                 id serial NOT NULL PRIMARY KEY,
                                                 "name" varchar(50) NOT NULL,
-                                                "is_final" boolean DEFAULT false
+    "is_final" boolean DEFAULT false
     );
 
 INSERT INTO "order_statuses" (name, is_final) VALUES ('cool_order_created', false);
@@ -20,14 +20,7 @@ CREATE TABLE IF NOT EXISTS "events" (
                                         "updated_at" timestamp NOT NULL,
                                         "created_at" timestamp NOT NULL,
 
-                                        FOREIGN KEY ("order_status_id") REFERENCES "order_statuses" ("id")
+                                        FOREIGN KEY ("order_status_id") REFERENCES "order_statuses" ("id"),
     );
 
 CREATE INDEX "index_events_on_order_status_id" ON "events" ("order_status_id");
-
-CREATE TABLE IF NOT EXISTS "completed_orders" (
-    "id" uuid NOT NULL PRIMARY KEY,
-    "completed" boolean NOT NULL DEFAULT true,
-
-    FOREIGN KEY ("id") REFERENCES "events" ("event_id")
-);

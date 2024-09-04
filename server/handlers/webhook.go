@@ -1,11 +1,12 @@
 package handlers
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,14 +19,13 @@ import (
 type WebhookHandler struct {
 	service *service.Service
 
-	// Events are pushed to this channel by the main events-gathering routine
-	Notifier chan []byte
-	// New client connections are pushed to this channel
-	newClients chan chan []byte
-	// Closed client connections are pushed to this channel
-	closingClients chan chan []byte
-	// Client connections registry
-	clients map[chan []byte]bool
+	Notifier       chan []byte                        // Events are pushed to this channel by the main events-gathering routine
+	newClients     chan map[uuid.UUID]chan []byte     // New client connections are pushed to this channel
+	closingClients chan map[uuid.UUID]chan []byte     // Closed client connections are pushed to this channel
+	clients        map[uuid.UUID]map[chan []byte]bool // Client connections registry
+	historyBuffer  map[uuid.UUID][]*models.EventMsg   // Buffer to store all sent messages
+	historyMutex   sync.Mutex                         // Mutex to protect access to historyBuffer
+	unsentMsg      map[uuid.UUID][]*models.EventMsg   // msg that should wait for the previous order status
 }
 
 func NewWebhookHandler(s *service.Service) *WebhookHandler {
@@ -33,9 +33,11 @@ func NewWebhookHandler(s *service.Service) *WebhookHandler {
 		service: s,
 
 		Notifier:       make(chan []byte),
-		newClients:     make(chan chan []byte),
-		closingClients: make(chan chan []byte),
-		clients:        make(map[chan []byte]bool),
+		newClients:     make(chan map[uuid.UUID]chan []byte),
+		closingClients: make(chan map[uuid.UUID]chan []byte),
+		clients:        make(map[uuid.UUID]map[chan []byte]bool),
+		historyBuffer:  make(map[uuid.UUID][]*models.EventMsg),
+		unsentMsg:      make(map[uuid.UUID][]*models.EventMsg),
 	}
 
 	// Set it running - listening and broadcasting events
@@ -48,20 +50,33 @@ func (h *WebhookHandler) listen() {
 	for {
 		select {
 		case client := <-h.newClients:
-			// A new client has connected.
-			// Register their message channel
-			h.clients[client] = true
-			log.Printf("Client added. %d registered clients", len(h.clients))
+			for orderID, ch := range client {
+				if _, exists := h.clients[orderID]; !exists {
+					h.clients[orderID] = make(map[chan []byte]bool)
+				}
+				h.clients[orderID][ch] = true
+				log.Printf("Client added for order %s. %d registered clients", orderID, len(h.clients[orderID]))
+			}
 		case client := <-h.closingClients:
-			// A client has dettached and we want to
-			// stop sending them messages.
-			delete(h.clients, client)
-			log.Printf("Removed client. %d registered clients", len(h.clients))
+			for orderID, ch := range client {
+				delete(h.clients[orderID], ch)
+				log.Printf("Removed client for order %s. %d registered clients", orderID, len(h.clients[orderID]))
+			}
 		case event := <-h.Notifier:
-			// We got a new event from the outside!
-			// Send event to all connected clients
-			for clientMessageChan := range h.clients {
-				clientMessageChan <- event
+			var eventMsg models.EventBody
+			err := json.Unmarshal(event, &eventMsg)
+			if err != nil {
+				log.Printf("Error unmarshalling event: %v", err)
+				continue
+			}
+			orderID, err := uuid.Parse(eventMsg.OrderID)
+			if err != nil {
+				continue
+			}
+			if clients, exists := h.clients[orderID]; exists {
+				for clientMessageChan := range clients {
+					clientMessageChan <- event
+				}
 			}
 		}
 	}
@@ -73,23 +88,22 @@ func (h *WebhookHandler) Stream(w http.ResponseWriter, r *http.Request) {
 		SendHTTPError(w, r, err)
 		return
 	}
-	// Check if the ResponseWriter supports flushing.
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
 		return
 	}
 
-	// Each connection registers its own message channel with the Broker's connections registry
+	// Each connection registers its own message channel
 	messageChan := make(chan []byte)
 
-	// Signal the broker that we have a new connection
-	h.newClients <- messageChan
+	// Signal that we have a new connection
+	h.newClients <- map[uuid.UUID]chan []byte{orderID: messageChan}
 
 	// Remove this client from the map of connected clients
 	// when this handler exits.
 	defer func() {
-		h.closingClients <- messageChan
+		h.closingClients <- map[uuid.UUID]chan []byte{orderID: messageChan}
 	}()
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -97,35 +111,35 @@ func (h *WebhookHandler) Stream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	// If the stream is finished, send the history to the new client
-	completed, err := h.service.CheckCompletedOrderStatusByID(r.Context(), orderID)
+	historyEvents, err := h.service.GetEventHistory(r.Context(), orderID)
 	if err != nil {
 		SendHTTPError(w, r, err)
 		return
 	}
 
-	if completed {
-		h.sendEventHistory(w, flusher, r, orderID)
+	var lastSentMessage *models.EventMsg
+
+	lastSentMessage, err = h.sendMsg(w, flusher, historyEvents, orderID, lastSentMessage) // sent messages to the new connected client
+	if err != nil {
+		SendHTTPError(w, r, err)
 		return
 	}
 
-	// Timer to close the connection after 1 minute of inactivity
-	inactivityTimeout := time.NewTimer(1 * time.Minute)
+	inactivityTimeout := time.NewTimer(10 * time.Minute) // start timer for close the connection
 	defer inactivityTimeout.Stop()
-
-	var completedTimer *time.Timer
 
 	for {
 		select {
 		// Listen to connection close and un-register messageChan
 		case <-r.Context().Done():
 			// remove this client from the map of connected clients
-			h.closingClients <- messageChan
+			h.closingClients <- map[uuid.UUID]chan []byte{orderID: messageChan}
 			return
 
 		// Listen for incoming messages from messageChan
 		case msg := <-messageChan:
-			if err = h.handleMessage(r.Context(), msg, &completedTimer); err != nil {
+			var eventMsg models.EventMsg
+			if err := json.Unmarshal(msg, &eventMsg); err != nil {
 				SendHTTPError(w, r, err)
 				return
 			}
@@ -136,36 +150,23 @@ func (h *WebhookHandler) Stream(w http.ResponseWriter, r *http.Request) {
 			}
 			inactivityTimeout.Reset(10 * time.Minute)
 
-			formattedMsg := fmt.Sprintf("data: %s\n\n", msg)
-			_, err := w.Write([]byte(formattedMsg))
+			lastSentMessage, err = h.sendMsg(w, flusher, []models.EventMsg{eventMsg}, orderID, lastSentMessage)
 			if err != nil {
 				SendHTTPError(w, r, err)
 				return
 			}
-			flusher.Flush()
-			flusher.Flush()
+
+			continue
 
 			// Timeout after 1 minute of inactivity
 		case <-inactivityTimeout.C:
-			h.closingClients <- messageChan
-			if err = h.finishStream(r.Context(), orderID); err != nil {
-				SendHTTPError(w, r, err)
-				return
-			}
-			return
-
-		case <-h.getCompletedTimerChan(completedTimer):
-			if err = h.finishStream(r.Context(), orderID); err != nil {
-				SendHTTPError(w, r, err)
-				return
-			}
+			h.closingClients <- map[uuid.UUID]chan []byte{orderID: messageChan}
 			return
 		}
 	}
 }
 
 func (h *WebhookHandler) BroadcastMessage(w http.ResponseWriter, r *http.Request) {
-	// Parse the request body
 	var req models.EventBody
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
@@ -236,78 +237,106 @@ func (h *WebhookHandler) validateEventReq(req models.EventBody) (models.Event, e
 	}, nil
 }
 
-func (h *WebhookHandler) handleMessage(ctx context.Context, msg []byte, completedTimer **time.Timer) error {
-	var eventReq models.EventBody
-	if err := json.Unmarshal(msg, &eventReq); err != nil {
-		return err
-	}
+func (h *WebhookHandler) sendMsg(
+	w http.ResponseWriter, flusher http.Flusher,
+	events []models.EventMsg, orderID uuid.UUID,
+	lastSentMessage *models.EventMsg,
+) (*models.EventMsg, error) {
 
-	orderID, err := uuid.Parse(eventReq.OrderID)
-	if err != nil {
-		return err
-	}
-
-	orderStatus, err := h.service.GetOrderStatusByName(ctx, eventReq.OrderStatus)
-	if err != nil {
-		return err
-	}
-
-	if orderStatus.IsFinal {
-		switch eventReq.OrderStatus {
-		case models.Chinazes:
-			if *completedTimer != nil {
-				(*completedTimer).Stop()
+	for _, eventMsg := range events {
+		if allowToSendMsgToStream(lastSentMessage, &eventMsg) {
+			formattedMsg := fmt.Sprintf("%s\n\n", eventMsg)
+			_, err := w.Write([]byte(formattedMsg))
+			if err != nil {
+				return nil, err
 			}
-			*completedTimer = time.NewTimer(30 * time.Second)
-		case models.GiveMyMoneyBack:
-			if *completedTimer != nil {
-				(*completedTimer).Stop()
-				*completedTimer = nil
+			flusher.Flush()
 
-				if err = h.finishStream(ctx, orderID); err != nil {
-					return err
-				}
+			lastSentMessage = &eventMsg
+
+			lastSentMessage, err = h.checkUnsentMsgToSend(lastSentMessage, orderID, w, flusher)
+			if err != nil {
+				return nil, err
 			}
-		default:
-			if err = h.finishStream(ctx, orderID); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
-func (h *WebhookHandler) sendEventHistory(w http.ResponseWriter, flusher http.Flusher, r *http.Request, orderID uuid.UUID) {
-	events, err := h.service.GetEventHistory(r.Context(), orderID)
-	if err != nil {
-		http.Error(w, "Failed to retrieve event history", http.StatusInternalServerError)
-		return
-	}
-
-	for _, event := range events {
-		eventData, err := json.Marshal(event)
-		if err != nil {
-			log.Printf("Failed to marshal event: %v", err)
 			continue
 		}
 
-		w.Write(eventData)
-		flusher.Flush()
+		h.storeUnSentMsg(&eventMsg, orderID)
 	}
+
+	return lastSentMessage, nil
 }
 
-func (h *WebhookHandler) finishStream(ctx context.Context, orderID uuid.UUID) error {
-	if err := h.service.AddCompletedOrder(ctx, orderID); err != nil {
-		return err
+func (h *WebhookHandler) storeUnSentMsg(msg *models.EventMsg, orderID uuid.UUID) {
+	h.historyMutex.Lock()
+	defer h.historyMutex.Unlock()
+
+	if _, exists := h.unsentMsg[orderID]; !exists {
+		h.unsentMsg[orderID] = []*models.EventMsg{}
 	}
 
-	return nil
+	h.unsentMsg[orderID] = append(h.unsentMsg[orderID], msg)
+	sort.Slice(h.unsentMsg[orderID], func(i, j int) bool {
+		return h.unsentMsg[orderID][i].UpdatedAt.After(h.unsentMsg[orderID][j].UpdatedAt)
+	})
 }
 
-func (h *WebhookHandler) getCompletedTimerChan(timer *time.Timer) <-chan time.Time {
-	if timer != nil {
-		return timer.C
+func (h *WebhookHandler) checkUnsentMsgToSend(lastSentMessage *models.EventMsg, orderID uuid.UUID, w http.ResponseWriter, flusher http.Flusher) (*models.EventMsg, error) {
+	l := len(h.unsentMsg[orderID])
+	for ; l > 0; l-- {
+		if allowToSendMsgToStream(lastSentMessage, h.unsentMsg[orderID][l-1]) {
+			msg, err := json.Marshal(h.unsentMsg[orderID][l-1])
+			if err != nil {
+				return nil, err
+			}
+
+			formattedMsg := fmt.Sprintf("%s\n\n", msg)
+			_, err = w.Write([]byte(formattedMsg))
+			if err != nil {
+				return nil, err
+			}
+			flusher.Flush()
+
+			lastSentMessage = h.unsentMsg[orderID][l-1]
+
+			h.unsentMsg[orderID] = h.unsentMsg[orderID][:l-1]
+		} else {
+			break
+		}
 	}
-	return nil
+
+	return lastSentMessage, nil
+}
+
+func allowToSendMsgToStream(lastSentMsg, eventMsg *models.EventMsg) bool {
+	if eventMsg.OrderStatus == models.CoolOrderCreated && lastSentMsg == nil {
+		return true
+	}
+
+	if lastSentMsg != nil {
+		if (eventMsg.OrderStatus == models.SBUVarificationPending && lastSentMsg.OrderStatus == models.CoolOrderCreated) ||
+			canceledOrder(eventMsg.OrderStatus) {
+			return true
+		}
+
+		if (eventMsg.OrderStatus == models.ConfirmedByMayor && lastSentMsg.OrderStatus == models.SBUVarificationPending) ||
+			canceledOrder(eventMsg.OrderStatus) {
+			return true
+		}
+
+		if lastSentMsg.OrderStatus == models.ConfirmedByMayor && (eventMsg.OrderStatus == models.Chinazes ||
+			canceledOrder(eventMsg.OrderStatus)) {
+			return true
+		}
+
+		if lastSentMsg.OrderStatus == models.Chinazes && eventMsg.OrderStatus == models.GiveMyMoneyBack {
+			return true
+		}
+	}
+
+	return false
+}
+
+func canceledOrder(orderStatus string) bool {
+	return orderStatus == models.Failed || orderStatus == models.ChangedMyMind
 }

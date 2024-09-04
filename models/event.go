@@ -14,7 +14,7 @@ const (
 	ChangedMyMind          = "changed_my_mind"
 	Failed                 = "failed"
 	Chinazes               = "chinazes"
-	GiveMyMoneyBack        = "give_my_money_back_id"
+	GiveMyMoneyBack        = "give_my_money_back"
 )
 
 const (
@@ -34,6 +34,15 @@ type EventBody struct {
 	OrderStatus string `json:"order_status"`
 	UpdatedAt   string `json:"updated_at"`
 	CreatedAt   string `json:"created_at"`
+}
+
+type EventMsg struct {
+	EventID     uuid.UUID `json:"event_id"`
+	OrderID     uuid.UUID `json:"order_id"`
+	UserID      uuid.UUID `json:"user_id"`
+	OrderStatus string    `json:"order_status"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type Event struct {
