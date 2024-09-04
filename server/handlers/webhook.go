@@ -138,17 +138,13 @@ func (h *WebhookHandler) Stream(w http.ResponseWriter, r *http.Request) {
 
 		// Listen for incoming messages from messageChan
 		case msg := <-messageChan:
+			inactivityTimeout.Reset(1 * time.Minute)
+
 			var eventMsg models.EventMsg
 			if err := json.Unmarshal(msg, &eventMsg); err != nil {
 				SendHTTPError(w, r, err)
 				return
 			}
-
-			// Reset the timeout timer
-			if !inactivityTimeout.Stop() {
-				<-inactivityTimeout.C
-			}
-			inactivityTimeout.Reset(1 * time.Minute)
 
 			lastSentMessage, err = h.sendMsg(w, flusher, []models.EventMsg{eventMsg}, orderID, lastSentMessage)
 			if err != nil {
