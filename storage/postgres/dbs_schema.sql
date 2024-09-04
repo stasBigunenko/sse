@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS "events" (
                                         "updated_at" timestamp NOT NULL,
                                         "created_at" timestamp NOT NULL,
 
-                                        FOREIGN KEY ("order_status_id") REFERENCES "order_statuses" ("id"),
+                                        FOREIGN KEY ("order_status_id") REFERENCES "order_statuses" ("id")
     );
 
 CREATE INDEX "index_events_on_order_status_id" ON "events" ("order_status_id");
