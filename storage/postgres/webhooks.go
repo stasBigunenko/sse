@@ -20,7 +20,7 @@ func (p *Postgres) NewWebhookRepo() *WebhookRepo {
 	return &WebhookRepo{p}
 }
 
-func (p *WebhookRepo) AddEvent(ctx context.Context, event models.Event, isFinal bool) error {
+func (p *WebhookRepo) AddEvent(ctx context.Context, event models.Event) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 

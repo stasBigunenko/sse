@@ -37,7 +37,7 @@ func (s *Service) AddEvent(ctx context.Context, event models.Event, statusName s
 
 	event.OrderStatusID = orderStatus.ID
 
-	if err = s.WebhookRepo.AddEvent(ctx, event, orderStatus.IsFinal); err != nil {
+	if err = s.WebhookRepo.AddEvent(ctx, event); err != nil {
 		return err
 	}
 
