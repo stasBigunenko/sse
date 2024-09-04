@@ -125,7 +125,7 @@ func (h *WebhookHandler) Stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inactivityTimeout := time.NewTimer(10 * time.Minute) // start timer for close the connection
+	inactivityTimeout := time.NewTimer(1 * time.Minute) // start timer for close the connection
 	defer inactivityTimeout.Stop()
 
 	for {
@@ -148,7 +148,7 @@ func (h *WebhookHandler) Stream(w http.ResponseWriter, r *http.Request) {
 			if !inactivityTimeout.Stop() {
 				<-inactivityTimeout.C
 			}
-			inactivityTimeout.Reset(10 * time.Minute)
+			inactivityTimeout.Reset(1 * time.Minute)
 
 			lastSentMessage, err = h.sendMsg(w, flusher, []models.EventMsg{eventMsg}, orderID, lastSentMessage)
 			if err != nil {
