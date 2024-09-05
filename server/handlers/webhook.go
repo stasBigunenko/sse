@@ -23,6 +23,7 @@ type WebhookHandler struct {
 	newClients     chan map[uuid.UUID]chan []byte     // New client connections are pushed to this channel
 	closingClients chan map[uuid.UUID]chan []byte     // Closed client connections are pushed to this channel
 	clients        map[uuid.UUID]map[chan []byte]bool // Client connections registry
+	clientsMutex   sync.Mutex                         // Mutex to protect access to clients map
 	historyBuffer  map[uuid.UUID][]*models.EventMsg   // Buffer to store all sent messages
 	historyMutex   sync.Mutex                         // Mutex to protect access to historyBuffer
 	unsentMsg      map[uuid.UUID][]*models.EventMsg   // msg that should wait for the previous order status
@@ -50,6 +51,7 @@ func (h *WebhookHandler) listen() {
 	for {
 		select {
 		case client := <-h.newClients:
+			h.clientsMutex.Lock()
 			for orderID, ch := range client {
 				if _, exists := h.clients[orderID]; !exists {
 					h.clients[orderID] = make(map[chan []byte]bool)
@@ -57,11 +59,16 @@ func (h *WebhookHandler) listen() {
 				h.clients[orderID][ch] = true
 				log.Printf("Client added for order %s. %d registered clients", orderID, len(h.clients[orderID]))
 			}
+			h.clientsMutex.Unlock()
+
 		case client := <-h.closingClients:
+			h.clientsMutex.Lock()
 			for orderID, ch := range client {
 				delete(h.clients[orderID], ch)
 				log.Printf("Removed client for order %s. %d registered clients", orderID, len(h.clients[orderID]))
 			}
+			h.clientsMutex.Unlock()
+
 		case event := <-h.Notifier:
 			var eventMsg models.EventBody
 			err := json.Unmarshal(event, &eventMsg)
@@ -73,11 +80,19 @@ func (h *WebhookHandler) listen() {
 			if err != nil {
 				continue
 			}
+
+			h.clientsMutex.Lock()
 			if clients, exists := h.clients[orderID]; exists {
 				for clientMessageChan := range clients {
-					clientMessageChan <- event
+					select {
+					case clientMessageChan <- event:
+						// Message sent successfully
+					default:
+						// Avoid blocking if the client is slow
+					}
 				}
 			}
+			h.clientsMutex.Unlock()
 		}
 	}
 }
