@@ -293,6 +293,9 @@ func (h *WebhookHandler) storeUnSentMsg(msg *models.EventMsg, orderID uuid.UUID)
 }
 
 func (h *WebhookHandler) checkUnsentMsgToSend(lastSentMessage *models.EventMsg, orderID uuid.UUID, w http.ResponseWriter, flusher http.Flusher) (*models.EventMsg, error) {
+	h.historyMutex.Lock() // Lock before accessing unsentMsg
+	defer h.historyMutex.Unlock()
+
 	l := len(h.unsentMsg[orderID])
 	for ; l > 0; l-- {
 		if allowToSendMsgToStream(lastSentMessage, h.unsentMsg[orderID][l-1]) {
