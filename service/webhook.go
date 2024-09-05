@@ -72,7 +72,7 @@ func (s *Service) validateEvent(event models.Event, lastEvent models.FullEventIn
 		return models.ErrAlreadyProcessed
 	}
 
-	if lastEvent.IsFinal {
+	if lastEvent.IsFinal && lastEvent.UpdatedAt.Before(event.UpdatedAt) {
 		return models.ErrAlreadyProcessed
 	}
 
