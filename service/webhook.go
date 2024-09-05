@@ -65,14 +65,14 @@ func (s *Service) GetEventHistory(ctx context.Context, orderID uuid.UUID) ([]mod
 	return res, err
 }
 
-func (s *Service) validateEvent(event, lastEvent models.Event) error {
+func (s *Service) validateEvent(event models.Event, lastEvent models.FullEventInfo) error {
 	if event.OrderStatusID == models.GiveMyMoneyBackID &&
 		lastEvent.OrderStatusID == models.ChinazesID &&
-		event.UpdatedAt.Sub(lastEvent.UpdatedAt) < 30*time.Second {
-		return nil
+		event.UpdatedAt.Sub(lastEvent.UpdatedAt) > 30*time.Second {
+		return models.ErrAlreadyProcessed
 	}
 
-	if lastEvent.OrderStatusID > 3 {
+	if lastEvent.IsFinal {
 		return models.ErrAlreadyProcessed
 	}
 

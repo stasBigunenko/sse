@@ -23,13 +23,9 @@ func New(webhookRepo WebhookRepo, orderRepo OrderRepo) *Service {
 type WebhookRepo interface {
 	AddEvent(ctx context.Context, event models.Event) error
 	GetOrderEvents(ctx context.Context, orderID uuid.UUID) ([]models.FullEventInfo, error)
-	EventExists(ctx context.Context, orderID uuid.UUID, orderStatusIDs []int) (bool, error)
-	GetEventByOrderStatus(ctx context.Context, orderID uuid.UUID, orderStatusID int) (*models.Event, error)
 	GetOrderStatusByName(ctx context.Context, name string) (*models.OrderStatus, error)
-	CheckCompletedOrderStatusByID(ctx context.Context, orderID uuid.UUID) (bool, error)
-	AddCompletedOrder(ctx context.Context, orderID uuid.UUID) error
 	GetEventByID(ctx context.Context, eventID uuid.UUID) (*models.Event, error)
-	GetLastUpdatedEventByOrderID(ctx context.Context, orderID uuid.UUID) (*models.Event, error)
+	GetLastUpdatedEventByOrderID(ctx context.Context, orderID uuid.UUID) (*models.FullEventInfo, error)
 }
 
 type OrderRepo interface {
