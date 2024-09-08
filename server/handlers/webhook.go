@@ -211,7 +211,7 @@ func (h *WebhookHandler) validateEventReq(req models.EventBody) (models.Event, e
 		return models.Event{}, err
 	}
 
-	if req.OrderStatus == models.EmptyString {
+	if len(req.OrderStatus) == 0 {
 		return models.Event{}, models.ErrBadRequest
 	}
 
@@ -254,30 +254,30 @@ func (h *WebhookHandler) sendMsg(
 
 			client.lastSentMessage = &eventMsg
 
-			if err = h.checkUnsentMsgToSend(client, w, flusher); err != nil {
+			if err = client.checkUnsentMsgToSend(w, flusher); err != nil {
 				return err
 			}
 			continue
 		}
 
-		h.storeUnSentMsg(&eventMsg, client)
+		client.storeUnSentMsg(&eventMsg)
 	}
 
 	return nil
 }
 
-func (h *WebhookHandler) storeUnSentMsg(msg *models.EventMsg, client *clientState) {
-	client.unsentMsg = append(client.unsentMsg, msg)
-	sort.Slice(client.unsentMsg, func(i, j int) bool {
-		return client.unsentMsg[i].UpdatedAt.After(client.unsentMsg[j].UpdatedAt)
+func (c *clientState) storeUnSentMsg(msg *models.EventMsg) {
+	c.unsentMsg = append(c.unsentMsg, msg)
+	sort.Slice(c.unsentMsg, func(i, j int) bool {
+		return c.unsentMsg[i].UpdatedAt.After(c.unsentMsg[j].UpdatedAt)
 	})
 }
 
-func (h *WebhookHandler) checkUnsentMsgToSend(client *clientState, w http.ResponseWriter, flusher http.Flusher) error {
-	l := len(client.unsentMsg)
+func (c *clientState) checkUnsentMsgToSend(w http.ResponseWriter, flusher http.Flusher) error {
+	l := len(c.unsentMsg)
 	for ; l > 0; l-- {
-		if allowToSendMsgToStream(client.lastSentMessage, client.unsentMsg[l-1]) {
-			msg, err := json.Marshal(client.unsentMsg[l-1])
+		if allowToSendMsgToStream(c.lastSentMessage, c.unsentMsg[l-1]) {
+			msg, err := json.Marshal(c.unsentMsg[l-1])
 			if err != nil {
 				return err
 			}
@@ -289,9 +289,9 @@ func (h *WebhookHandler) checkUnsentMsgToSend(client *clientState, w http.Respon
 			}
 			flusher.Flush()
 
-			client.lastSentMessage = client.unsentMsg[l-1]
+			c.lastSentMessage = c.unsentMsg[l-1]
 
-			client.unsentMsg = client.unsentMsg[:l-1]
+			c.unsentMsg = c.unsentMsg[:l-1]
 		} else {
 			break
 		}

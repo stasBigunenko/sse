@@ -1,12 +1,13 @@
 package handlers
 
 import (
-	"github.com/google/uuid"
 	"net/http"
 	"sse/models"
 	"sse/service"
 	"strconv"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 type OrdersHandler struct {
@@ -53,19 +54,17 @@ func parseOrdersFilters(r *http.Request) (*models.OrderFilter, error) {
 	sortByStr := r.URL.Query().Get("sort_by")
 	sortOrderStr := r.URL.Query().Get("sort_order")
 
-	if (statusesStr == models.EmptyString && isFinalStr == models.EmptyString) ||
-		(statusesStr != models.EmptyString && isFinalStr != models.EmptyString) {
+	if (len(statusesStr) == 0 && len(isFinalStr) == 0) ||
+		(len(statusesStr) != 0 && len(isFinalStr) != 0) {
 		return nil, models.ErrBadRequest
 	}
 
-	if statusesStr != models.EmptyString {
-		statuses, err = makeStringSlice(statusesStr)
-		if err != nil {
-			return nil, err
-		}
+	statuses, err = makeStringSlice(statusesStr)
+	if err != nil {
+		return nil, err
 	}
 
-	if isFinalStr != models.EmptyString {
+	if len(isFinalStr) != 0 {
 		isFinal, err := strconv.ParseBool(isFinalStr)
 		if err != nil {
 			return nil, err
@@ -75,14 +74,14 @@ func parseOrdersFilters(r *http.Request) (*models.OrderFilter, error) {
 		isFinalPtr = nil
 	}
 
-	if userIDStr != models.EmptyString {
+	if len(userIDStr) != 0 {
 		userID, err = uuid.Parse(userIDStr)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	if limitStr != models.EmptyString {
+	if len(limitStr) != 0 {
 		limit, err = strconv.Atoi(limitStr)
 		if err != nil {
 			return nil, err
@@ -91,7 +90,7 @@ func parseOrdersFilters(r *http.Request) (*models.OrderFilter, error) {
 		limit = 10
 	}
 
-	if offsetStr != models.EmptyString {
+	if len(offsetStr) != 0 {
 		offset, err = strconv.Atoi(offsetStr)
 		if err != nil {
 			return nil, err
@@ -100,7 +99,7 @@ func parseOrdersFilters(r *http.Request) (*models.OrderFilter, error) {
 		offset = 0
 	}
 
-	if sortByStr != models.EmptyString {
+	if len(sortByStr) != 0 {
 		if sortByStr != models.SortByCreatedAt && sortByStr != models.SortByUpdatedAt {
 			return nil, models.ErrBadRequest
 		}
@@ -109,7 +108,7 @@ func parseOrdersFilters(r *http.Request) (*models.OrderFilter, error) {
 		sortBy = models.SortByCreatedAt
 	}
 
-	if sortOrderStr != models.EmptyString {
+	if len(sortOrderStr) != 0 {
 		if sortOrderStr != models.OrderASC && sortOrderStr != models.OrderDESC {
 			return nil, models.ErrBadRequest
 		}
@@ -130,7 +129,7 @@ func parseOrdersFilters(r *http.Request) (*models.OrderFilter, error) {
 }
 
 func makeStringSlice(input string) ([]string, error) {
-	if input == "" {
+	if len(input) == 0 {
 		return nil, nil
 	}
 

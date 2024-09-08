@@ -19,18 +19,13 @@ const (
 )
 
 const (
-	CoolOrderCreatedID = iota + 1
-	SBUVarificationPendingID
-	ConfirmedByMayorID
-	ChangedMyMindID
-	FailedID
-	ChinazesID
-	GiveMyMoneyBackID
+	ChinazesID        = 6
+	GiveMyMoneyBackID = 7
 )
 
 const (
-	GiveMyMoneyBackTimeout time.Duration = 30000 * time.Second
-	InactivityTimeout      time.Duration = 10 * time.Minute
+	GiveMyMoneyBackTimeout time.Duration = 30 * time.Second
+	InactivityTimeout      time.Duration = 1 * time.Minute
 )
 
 type EventBody struct {

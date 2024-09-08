@@ -37,11 +37,11 @@ func main() {
 		return
 	}
 
-	service := service.New(dbConn.NewWebhookRepo(), dbConn.NewOrdersRepo())
+	services := service.New(dbConn.NewWebhookRepo(), dbConn.NewOrdersRepo())
 
-	wh := handlers.NewWebhookHandler(service)
+	wh := handlers.NewWebhookHandler(services)
 
-	router := http.NewController(wh, handlers.NewOrdersHandler(service))
+	router := http.NewController(wh, handlers.NewOrdersHandler(services))
 	httpSrv := http.NewHTPPServer(router, config.Appconfig.HTTPServer)
 
 	httpSrv.Run(ctx)

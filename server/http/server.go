@@ -33,7 +33,6 @@ func (s *Server) Run(ctx context.Context) {
 		}
 	}()
 
-	// Listen for the interrupt signal.
 	<-ctx.Done()
 
 	log.Println("shutting down gracefully, press Ctrl+C again to force")
