@@ -64,7 +64,8 @@ func (s *Service) GetEventHistory(ctx context.Context, orderID uuid.UUID) ([]mod
 }
 
 func (s *Service) validateEvent(event models.Event, lastEvent models.FullEventInfo, eventOrderStatus *models.OrderStatus) error {
-	if !eventOrderStatus.IsFinal || !lastEvent.IsFinal {
+	if !eventOrderStatus.IsFinal || !lastEvent.IsFinal ||
+		(lastEvent.OrderStatusName == models.GiveMyMoneyBack && eventOrderStatus.ID == models.ChinazesID) {
 		return nil
 	}
 
