@@ -22,18 +22,18 @@ func (s *Service) AddEvent(ctx context.Context, event models.Event, statusName s
 		return err
 	}
 
-	if lastEvent != nil {
-		if err = s.validateEvent(event, *lastEvent); err != nil {
-			return err
-		}
-	}
-
-	orderStatus, err := s.WebhookRepo.GetOrderStatusByName(ctx, statusName)
+	eventOrderStatus, err := s.WebhookRepo.GetOrderStatusByName(ctx, statusName)
 	if err != nil {
 		return err
 	}
 
-	event.OrderStatusID = orderStatus.ID
+	if lastEvent != nil {
+		if err = s.validateEvent(event, *lastEvent, eventOrderStatus); err != nil {
+			return err
+		}
+	}
+
+	event.OrderStatusID = eventOrderStatus.ID
 
 	if err = s.WebhookRepo.AddEvent(ctx, event); err != nil {
 		return err
@@ -63,16 +63,18 @@ func (s *Service) GetEventHistory(ctx context.Context, orderID uuid.UUID) ([]mod
 	return res, err
 }
 
-func (s *Service) validateEvent(event models.Event, lastEvent models.FullEventInfo) error {
-	if event.OrderStatusID == models.GiveMyMoneyBackID &&
-		lastEvent.OrderStatusID == models.ChinazesID &&
-		event.UpdatedAt.Sub(lastEvent.UpdatedAt) > models.GiveMyMoneyBackTimeout {
-		return models.ErrAlreadyProcessed
+func (s *Service) validateEvent(event models.Event, lastEvent models.FullEventInfo, eventOrderStatus *models.OrderStatus) error {
+	if !eventOrderStatus.IsFinal || !lastEvent.IsFinal {
+		return nil
 	}
 
-	if lastEvent.IsFinal && lastEvent.UpdatedAt.Before(event.UpdatedAt) {
-		return models.ErrAlreadyProcessed
+	if lastEvent.OrderStatusID == models.ChinazesID && eventOrderStatus.ID == models.GiveMyMoneyBackID {
+		if event.UpdatedAt.Sub(lastEvent.UpdatedAt) > models.GiveMyMoneyBackTimeout {
+			return models.ErrAlreadyProcessed
+		} else {
+			return nil
+		}
 	}
 
-	return nil
+	return models.ErrAlreadyExistsFinalStatus
 }

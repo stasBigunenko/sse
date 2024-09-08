@@ -30,7 +30,6 @@ type WebhookHandler struct {
 	closingClients chan map[uuid.UUID]chan []byte      // Closed client connections are pushed to this channel
 	clients        map[uuid.UUID]map[*clientState]bool // Client connections registry
 	clientsMutex   sync.Mutex                          // Mutex to protect access to clients map
-	streamMutex    sync.Mutex                          // Mutex to protect access to historyBuffer
 }
 
 func NewWebhookHandler(s *service.Service) *WebhookHandler {
@@ -43,7 +42,6 @@ func NewWebhookHandler(s *service.Service) *WebhookHandler {
 		clients:        make(map[uuid.UUID]map[*clientState]bool),
 	}
 
-	// Set it running - listening and broadcasting events
 	go wh.listen()
 
 	return wh
@@ -88,7 +86,6 @@ func (h *WebhookHandler) listen() {
 				for client := range clients {
 					select {
 					case client.messageChan <- event:
-						// Message sent successfully
 					default:
 						// Avoid blocking if the client is slow
 					}
@@ -111,17 +108,13 @@ func (h *WebhookHandler) Stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Each connection registers its own message channel
 	client := &clientState{
 		messageChan:     make(chan []byte, 5),
 		lastSentMessage: nil,
 	}
 
-	// Signal that we have a new connection
 	h.newClients <- map[uuid.UUID]chan []byte{orderID: client.messageChan}
 
-	// Remove this client from the map of connected clients
-	// when this handler exits.
 	defer func() {
 		h.closingClients <- map[uuid.UUID]chan []byte{orderID: client.messageChan}
 	}()
@@ -137,24 +130,21 @@ func (h *WebhookHandler) Stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = h.sendMsg(w, flusher, historyEvents, orderID, client) // sent messages to the new connected client
+	err = h.sendMsg(w, flusher, historyEvents, client)
 	if err != nil {
 		SendHTTPError(w, r, err)
 		return
 	}
 
-	inactivityTimeout := time.NewTimer(models.InactivityTimeout) // start timer for close the connection
+	inactivityTimeout := time.NewTimer(models.InactivityTimeout)
 	defer inactivityTimeout.Stop()
 
 	for {
 		select {
-		// Listen to connection close and un-register messageChan
 		case <-r.Context().Done():
-			// remove this client from the map of connected clients
 			h.closingClients <- map[uuid.UUID]chan []byte{orderID: client.messageChan}
 			return
 
-		// Listen for incoming messages from messageChan
 		case msg := <-client.messageChan:
 			inactivityTimeout.Reset(models.InactivityTimeout)
 
@@ -164,14 +154,11 @@ func (h *WebhookHandler) Stream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			if err = h.sendMsg(w, flusher, []models.EventMsg{eventMsg}, orderID, client); err != nil {
+			if err = h.sendMsg(w, flusher, []models.EventMsg{eventMsg}, client); err != nil {
 				SendHTTPError(w, r, err)
 				return
 			}
 
-			continue
-
-			// Timeout after 1 minute of inactivity
 		case <-inactivityTimeout.C:
 			h.closingClients <- map[uuid.UUID]chan []byte{orderID: client.messageChan}
 			return
@@ -252,7 +239,7 @@ func (h *WebhookHandler) validateEventReq(req models.EventBody) (models.Event, e
 
 func (h *WebhookHandler) sendMsg(
 	w http.ResponseWriter, flusher http.Flusher,
-	events []models.EventMsg, orderID uuid.UUID,
+	events []models.EventMsg,
 	client *clientState,
 ) error {
 
@@ -280,9 +267,6 @@ func (h *WebhookHandler) sendMsg(
 }
 
 func (h *WebhookHandler) storeUnSentMsg(msg *models.EventMsg, client *clientState) {
-	h.streamMutex.Lock()
-	defer h.streamMutex.Unlock()
-
 	client.unsentMsg = append(client.unsentMsg, msg)
 	sort.Slice(client.unsentMsg, func(i, j int) bool {
 		return client.unsentMsg[i].UpdatedAt.After(client.unsentMsg[j].UpdatedAt)
@@ -290,9 +274,6 @@ func (h *WebhookHandler) storeUnSentMsg(msg *models.EventMsg, client *clientStat
 }
 
 func (h *WebhookHandler) checkUnsentMsgToSend(client *clientState, w http.ResponseWriter, flusher http.Flusher) error {
-	h.streamMutex.Lock()
-	defer h.streamMutex.Unlock()
-
 	l := len(client.unsentMsg)
 	for ; l > 0; l-- {
 		if allowToSendMsgToStream(client.lastSentMessage, client.unsentMsg[l-1]) {
