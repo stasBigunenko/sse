@@ -2,8 +2,6 @@ package service
 
 import (
 	"context"
-	"time"
-
 	"github.com/google/uuid"
 
 	"sse/models"
@@ -68,7 +66,7 @@ func (s *Service) GetEventHistory(ctx context.Context, orderID uuid.UUID) ([]mod
 func (s *Service) validateEvent(event models.Event, lastEvent models.FullEventInfo) error {
 	if event.OrderStatusID == models.GiveMyMoneyBackID &&
 		lastEvent.OrderStatusID == models.ChinazesID &&
-		event.UpdatedAt.Sub(lastEvent.UpdatedAt) > 30*time.Second {
+		event.UpdatedAt.Sub(lastEvent.UpdatedAt) > models.GiveMyMoneyBackTimeout {
 		return models.ErrAlreadyProcessed
 	}
 

@@ -28,6 +28,11 @@ const (
 	GiveMyMoneyBackID
 )
 
+const (
+	GiveMyMoneyBackTimeout time.Duration = 30000 * time.Second
+	InactivityTimeout      time.Duration = 10 * time.Minute
+)
+
 type EventBody struct {
 	EventID     string `json:"event_id"`
 	OrderID     string `json:"order_id"`

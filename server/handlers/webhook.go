@@ -16,17 +16,21 @@ import (
 	"sse/service"
 )
 
+type clientState struct {
+	messageChan     chan []byte
+	lastSentMessage *models.EventMsg
+	unsentMsg       []*models.EventMsg
+}
+
 type WebhookHandler struct {
 	service *service.Service
 
-	Notifier       chan []byte                        // Events are pushed to this channel by the main events-gathering routine
-	newClients     chan map[uuid.UUID]chan []byte     // New client connections are pushed to this channel
-	closingClients chan map[uuid.UUID]chan []byte     // Closed client connections are pushed to this channel
-	clients        map[uuid.UUID]map[chan []byte]bool // Client connections registry
-	clientsMutex   sync.Mutex                         // Mutex to protect access to clients map
-	historyBuffer  map[uuid.UUID][]*models.EventMsg   // Buffer to store all sent messages
-	historyMutex   sync.Mutex                         // Mutex to protect access to historyBuffer
-	unsentMsg      map[uuid.UUID][]*models.EventMsg   // msg that should wait for the previous order status
+	Notifier       chan []byte                         // Events are pushed to this channel by the main events-gathering routine
+	newClients     chan map[uuid.UUID]chan []byte      // New client connections are pushed to this channel
+	closingClients chan map[uuid.UUID]chan []byte      // Closed client connections are pushed to this channel
+	clients        map[uuid.UUID]map[*clientState]bool // Client connections registry
+	clientsMutex   sync.Mutex                          // Mutex to protect access to clients map
+	streamMutex    sync.Mutex                          // Mutex to protect access to historyBuffer
 }
 
 func NewWebhookHandler(s *service.Service) *WebhookHandler {
@@ -36,9 +40,7 @@ func NewWebhookHandler(s *service.Service) *WebhookHandler {
 		Notifier:       make(chan []byte),
 		newClients:     make(chan map[uuid.UUID]chan []byte),
 		closingClients: make(chan map[uuid.UUID]chan []byte),
-		clients:        make(map[uuid.UUID]map[chan []byte]bool),
-		historyBuffer:  make(map[uuid.UUID][]*models.EventMsg),
-		unsentMsg:      make(map[uuid.UUID][]*models.EventMsg),
+		clients:        make(map[uuid.UUID]map[*clientState]bool),
 	}
 
 	// Set it running - listening and broadcasting events
@@ -54,9 +56,9 @@ func (h *WebhookHandler) listen() {
 			h.clientsMutex.Lock()
 			for orderID, ch := range client {
 				if _, exists := h.clients[orderID]; !exists {
-					h.clients[orderID] = make(map[chan []byte]bool)
+					h.clients[orderID] = make(map[*clientState]bool)
 				}
-				h.clients[orderID][ch] = true
+				h.clients[orderID][&clientState{messageChan: ch}] = true
 				log.Printf("Client added for order %s. %d registered clients", orderID, len(h.clients[orderID]))
 			}
 			h.clientsMutex.Unlock()
@@ -64,7 +66,7 @@ func (h *WebhookHandler) listen() {
 		case client := <-h.closingClients:
 			h.clientsMutex.Lock()
 			for orderID, ch := range client {
-				delete(h.clients[orderID], ch)
+				delete(h.clients[orderID], &clientState{messageChan: ch})
 				log.Printf("Removed client for order %s. %d registered clients", orderID, len(h.clients[orderID]))
 			}
 			h.clientsMutex.Unlock()
@@ -83,9 +85,9 @@ func (h *WebhookHandler) listen() {
 
 			h.clientsMutex.Lock()
 			if clients, exists := h.clients[orderID]; exists {
-				for clientMessageChan := range clients {
+				for client := range clients {
 					select {
-					case clientMessageChan <- event:
+					case client.messageChan <- event:
 						// Message sent successfully
 					default:
 						// Avoid blocking if the client is slow
@@ -110,15 +112,18 @@ func (h *WebhookHandler) Stream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Each connection registers its own message channel
-	messageChan := make(chan []byte)
+	client := &clientState{
+		messageChan:     make(chan []byte, 5),
+		lastSentMessage: nil,
+	}
 
 	// Signal that we have a new connection
-	h.newClients <- map[uuid.UUID]chan []byte{orderID: messageChan}
+	h.newClients <- map[uuid.UUID]chan []byte{orderID: client.messageChan}
 
 	// Remove this client from the map of connected clients
 	// when this handler exits.
 	defer func() {
-		h.closingClients <- map[uuid.UUID]chan []byte{orderID: messageChan}
+		h.closingClients <- map[uuid.UUID]chan []byte{orderID: client.messageChan}
 	}()
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -132,15 +137,13 @@ func (h *WebhookHandler) Stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var lastSentMessage *models.EventMsg
-
-	lastSentMessage, err = h.sendMsg(w, flusher, historyEvents, orderID, lastSentMessage) // sent messages to the new connected client
+	err = h.sendMsg(w, flusher, historyEvents, orderID, client) // sent messages to the new connected client
 	if err != nil {
 		SendHTTPError(w, r, err)
 		return
 	}
 
-	inactivityTimeout := time.NewTimer(1 * time.Minute) // start timer for close the connection
+	inactivityTimeout := time.NewTimer(models.InactivityTimeout) // start timer for close the connection
 	defer inactivityTimeout.Stop()
 
 	for {
@@ -148,12 +151,12 @@ func (h *WebhookHandler) Stream(w http.ResponseWriter, r *http.Request) {
 		// Listen to connection close and un-register messageChan
 		case <-r.Context().Done():
 			// remove this client from the map of connected clients
-			h.closingClients <- map[uuid.UUID]chan []byte{orderID: messageChan}
+			h.closingClients <- map[uuid.UUID]chan []byte{orderID: client.messageChan}
 			return
 
 		// Listen for incoming messages from messageChan
-		case msg := <-messageChan:
-			inactivityTimeout.Reset(1 * time.Minute)
+		case msg := <-client.messageChan:
+			inactivityTimeout.Reset(models.InactivityTimeout)
 
 			var eventMsg models.EventMsg
 			if err := json.Unmarshal(msg, &eventMsg); err != nil {
@@ -161,8 +164,7 @@ func (h *WebhookHandler) Stream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			lastSentMessage, err = h.sendMsg(w, flusher, []models.EventMsg{eventMsg}, orderID, lastSentMessage)
-			if err != nil {
+			if err = h.sendMsg(w, flusher, []models.EventMsg{eventMsg}, orderID, client); err != nil {
 				SendHTTPError(w, r, err)
 				return
 			}
@@ -171,7 +173,7 @@ func (h *WebhookHandler) Stream(w http.ResponseWriter, r *http.Request) {
 
 			// Timeout after 1 minute of inactivity
 		case <-inactivityTimeout.C:
-			h.closingClients <- map[uuid.UUID]chan []byte{orderID: messageChan}
+			h.closingClients <- map[uuid.UUID]chan []byte{orderID: client.messageChan}
 			return
 		}
 	}
@@ -251,75 +253,70 @@ func (h *WebhookHandler) validateEventReq(req models.EventBody) (models.Event, e
 func (h *WebhookHandler) sendMsg(
 	w http.ResponseWriter, flusher http.Flusher,
 	events []models.EventMsg, orderID uuid.UUID,
-	lastSentMessage *models.EventMsg,
-) (*models.EventMsg, error) {
+	client *clientState,
+) error {
 
 	for _, eventMsg := range events {
-		if allowToSendMsgToStream(lastSentMessage, &eventMsg) {
+		if allowToSendMsgToStream(client.lastSentMessage, &eventMsg) {
 			formattedMsg := fmt.Sprintf("%s\n\n", eventMsg)
 			_, err := w.Write([]byte(formattedMsg))
 			if err != nil {
-				return nil, err
+				return err
 			}
 			flusher.Flush()
 
-			lastSentMessage = &eventMsg
+			client.lastSentMessage = &eventMsg
 
-			lastSentMessage, err = h.checkUnsentMsgToSend(lastSentMessage, orderID, w, flusher)
-			if err != nil {
-				return nil, err
+			if err = h.checkUnsentMsgToSend(client, w, flusher); err != nil {
+				return err
 			}
 			continue
 		}
 
-		h.storeUnSentMsg(&eventMsg, orderID)
+		h.storeUnSentMsg(&eventMsg, client)
 	}
 
-	return lastSentMessage, nil
+	return nil
 }
 
-func (h *WebhookHandler) storeUnSentMsg(msg *models.EventMsg, orderID uuid.UUID) {
-	h.historyMutex.Lock()
-	defer h.historyMutex.Unlock()
+func (h *WebhookHandler) storeUnSentMsg(msg *models.EventMsg, client *clientState) {
+	h.streamMutex.Lock()
+	defer h.streamMutex.Unlock()
 
-	if _, exists := h.unsentMsg[orderID]; !exists {
-		h.unsentMsg[orderID] = []*models.EventMsg{}
-	}
-
-	h.unsentMsg[orderID] = append(h.unsentMsg[orderID], msg)
-	sort.Slice(h.unsentMsg[orderID], func(i, j int) bool {
-		return h.unsentMsg[orderID][i].UpdatedAt.After(h.unsentMsg[orderID][j].UpdatedAt)
+	client.unsentMsg = append(client.unsentMsg, msg)
+	sort.Slice(client.unsentMsg, func(i, j int) bool {
+		return client.unsentMsg[i].UpdatedAt.After(client.unsentMsg[j].UpdatedAt)
 	})
 }
 
-func (h *WebhookHandler) checkUnsentMsgToSend(lastSentMessage *models.EventMsg, orderID uuid.UUID, w http.ResponseWriter, flusher http.Flusher) (*models.EventMsg, error) {
-	h.historyMutex.Lock() // Lock before accessing unsentMsg
-	defer h.historyMutex.Unlock()
+func (h *WebhookHandler) checkUnsentMsgToSend(client *clientState, w http.ResponseWriter, flusher http.Flusher) error {
+	h.streamMutex.Lock()
+	defer h.streamMutex.Unlock()
 
-	l := len(h.unsentMsg[orderID])
+	l := len(client.unsentMsg)
 	for ; l > 0; l-- {
-		if allowToSendMsgToStream(lastSentMessage, h.unsentMsg[orderID][l-1]) {
-			msg, err := json.Marshal(h.unsentMsg[orderID][l-1])
+		if allowToSendMsgToStream(client.lastSentMessage, client.unsentMsg[l-1]) {
+			msg, err := json.Marshal(client.unsentMsg[l-1])
 			if err != nil {
-				return nil, err
+				return err
 			}
 
 			formattedMsg := fmt.Sprintf("%s\n\n", msg)
 			_, err = w.Write([]byte(formattedMsg))
 			if err != nil {
-				return nil, err
+				return err
 			}
 			flusher.Flush()
 
-			lastSentMessage = h.unsentMsg[orderID][l-1]
+			client.lastSentMessage = client.unsentMsg[l-1]
 
-			h.unsentMsg[orderID] = h.unsentMsg[orderID][:l-1]
+			client.unsentMsg = client.unsentMsg[:l-1]
 		} else {
 			break
 		}
 	}
 
-	return lastSentMessage, nil
+	return nil
 }
 
 func allowToSendMsgToStream(lastSentMsg, eventMsg *models.EventMsg) bool {
